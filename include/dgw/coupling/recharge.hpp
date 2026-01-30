@@ -90,7 +90,7 @@ private:
 
         for (Index i = 0; i < n; ++i) {
             // Compute lag time based on depth to water table
-            Real lag_coef = (params_.lag_coefficient.size() > 0) ?
+            Real lag_coef = (params_.lag_coefficient.size() > i) ?
                 params_.lag_coefficient(i) : 1000.0;  // Default: 1000 s/m
             Real tau = std::clamp(
                 lag_coef * water_table_depth(i),
@@ -125,9 +125,9 @@ private:
         Vector effective_recharge(n);
 
         for (Index i = 0; i < n; ++i) {
-            Real K_unsat = (params_.unsat_K.size() > 0) ?
+            Real K_unsat = (params_.unsat_K.size() > i) ?
                 params_.unsat_K(i) : 1e-6;
-            Real theta = (params_.unsat_theta.size() > 0) ?
+            Real theta = (params_.unsat_theta.size() > i) ?
                 params_.unsat_theta(i) : 0.3;
             Real depth = water_table_depth(i);
 

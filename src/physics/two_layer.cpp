@@ -161,10 +161,10 @@ void TwoLayerSolver::apply_boundary_conditions(
                 residual(n + cell) = s.h2(cell) - h_bc;
                 // Zero out Jacobian rows and set diagonal to 1
                 for (SparseMatrix::InnerIterator it(jacobian, cell); it; ++it) {
-                    it.valueRef() = (it.row() == cell) ? 1.0 : 0.0;
+                    it.valueRef() = (it.col() == cell) ? 1.0 : 0.0;
                 }
                 for (SparseMatrix::InnerIterator it(jacobian, n + cell); it; ++it) {
-                    it.valueRef() = (it.row() == static_cast<SparseMatrix::StorageIndex>(n + cell)) ? 1.0 : 0.0;
+                    it.valueRef() = (it.col() == static_cast<SparseMatrix::StorageIndex>(n + cell)) ? 1.0 : 0.0;
                 }
                 break;
             }
@@ -235,7 +235,7 @@ std::pair<Real, Real> TwoLayerSolver::storage_by_layer(
         Real A = mesh.cell_volume(i);
         Real sat1 = std::max(s.h1(i) - p.z_bottom_1(i), 0.0);
         storage1 += p.Sy(i) * A * sat1;
-        storage2 += p.Ss2(i) * p.thickness_2(i) * A * s.h2(i);
+        storage2 += p.Ss2(i) * p.thickness_2(i) * A * (s.h2(i) - p.z_bottom_2(i));
     }
     return {storage1, storage2};
 }
@@ -382,15 +382,32 @@ void TwoLayerSolver::assemble_monolithic_jacobian(
         if (i < 0 || j < 0) continue;
 
         const Face& face = mesh.face(f);
-        Real T_i = params.K1(i) * std::max(state.h1(i) - params.z_bottom_1(i), 0.0);
-        Real T_j = params.K1(j) * std::max(state.h1(j) - params.z_bottom_1(j), 0.0);
+        Real h_i = state.h1(i), h_j = state.h1(j);
+        Real b_i = std::max(h_i - params.z_bottom_1(i), 0.0);
+        Real b_j = std::max(h_j - params.z_bottom_1(j), 0.0);
+        Real T_i = params.K1(i) * b_i;
+        Real T_j = params.K1(j) * b_j;
         Real T_ij = (T_i + T_j > 0.0) ? 2.0 * T_i * T_j / (T_i + T_j) : 0.0;
-        Real coef = T_ij * face.area / face.distance;
 
-        triplets.emplace_back(i, i, coef);
-        triplets.emplace_back(i, j, -coef);
-        triplets.emplace_back(j, j, coef);
-        triplets.emplace_back(j, i, -coef);
+        // dT/dh: K if saturated, 0 if dry
+        Real dT_i = (b_i > 0.0) ? params.K1(i) : 0.0;
+        Real dT_j = (b_j > 0.0) ? params.K1(j) : 0.0;
+
+        Real W_L = face.area / face.distance;
+        Real dh = h_j - h_i;
+
+        // Harmonic mean derivatives
+        Real denom_T = T_i + T_j + 1e-30;
+        Real dTij_dhi = 2.0 * T_j * T_j / (denom_T * denom_T) * dT_i;
+        Real dTij_dhj = 2.0 * T_i * T_i / (denom_T * denom_T) * dT_j;
+
+        Real dQ_dhi = -T_ij * W_L + dh * W_L * dTij_dhi;
+        Real dQ_dhj = +T_ij * W_L + dh * W_L * dTij_dhj;
+
+        triplets.emplace_back(i, i, -dQ_dhi);
+        triplets.emplace_back(i, j, -dQ_dhj);
+        triplets.emplace_back(j, i, +dQ_dhi);
+        triplets.emplace_back(j, j, +dQ_dhj);
     }
 
     // Layer 2 diagonal (storage + leakage)
@@ -475,11 +492,45 @@ void monolithic_residual(
         if (pumping1) F1[i] += pumping1[i];
     }
 
+    // Layer 1 lateral fluxes
+    for (Index i = 0; i < n_cells; ++i) {
+        Index start = cell_neighbors_ptr[i];
+        Index end = cell_neighbors_ptr[i + 1];
+        for (Index k = start; k < end; ++k) {
+            Index j = cell_neighbors[k];
+            if (j <= i) continue;
+            Real b_i = std::max(h1[i] - z_bottom1[i], 0.0);
+            Real b_j = std::max(h1[j] - z_bottom1[j], 0.0);
+            Real T_i = K1[i] * b_i;
+            Real T_j = K1[j] * b_j;
+            Real T_ij = (T_i + T_j > 0.0) ? 2.0 * T_i * T_j / (T_i + T_j) : 0.0;
+            Real flux = T_ij * face_area[k] * (h1[j] - h1[i]) / face_distance[k];
+            F1[i] -= flux;
+            F1[j] += flux;
+        }
+    }
+
     // Layer 2 storage + sources
     for (Index i = 0; i < n_cells; ++i) {
         F2[i] = S2[i] * cell_area[i] * (h2[i] - h2_old[i]) / dt;
         F2[i] -= leakance[i] * (h1[i] - h2[i]) * cell_area[i];
         if (pumping2) F2[i] += pumping2[i];
+    }
+
+    // Layer 2 lateral fluxes
+    for (Index i = 0; i < n_cells; ++i) {
+        Index start = cell_neighbors_ptr[i];
+        Index end = cell_neighbors_ptr[i + 1];
+        for (Index k = start; k < end; ++k) {
+            Index j = cell_neighbors[k];
+            if (j <= i) continue;
+            Real T_i_2 = T2[i];
+            Real T_j_2 = T2[j];
+            Real T_ij_2 = (T_i_2 + T_j_2 > 0.0) ? 2.0 * T_i_2 * T_j_2 / (T_i_2 + T_j_2) : 0.0;
+            Real flux2 = T_ij_2 * face_area[k] * (h2[j] - h2[i]) / face_distance[k];
+            F2[i] -= flux2;
+            F2[j] += flux2;
+        }
     }
 }
 
@@ -532,6 +583,45 @@ void monolithic_jacobian(
         jac_rows[nnz] = n_cells + i;
         jac_cols[nnz] = i;
         nnz++;
+    }
+
+    // Layer 1 off-diagonal (lateral flux)
+    for (Index i = 0; i < n_cells; ++i) {
+        Index start = cell_neighbors_ptr[i];
+        Index end = cell_neighbors_ptr[i + 1];
+        for (Index k = start; k < end; ++k) {
+            Index j = cell_neighbors[k];
+            if (j <= i) continue;
+            const Real* h1 = h;
+            Real b_i = std::max(h1[i] - z_bottom1[i], 0.0);
+            Real b_j = std::max(h1[j] - z_bottom1[j], 0.0);
+            Real T_i = K1[i] * b_i;
+            Real T_j = K1[j] * b_j;
+            Real T_ij = (T_i + T_j > 0.0) ? 2.0 * T_i * T_j / (T_i + T_j) : 0.0;
+            Real coef = T_ij * face_area[k] / face_distance[k];
+
+            jac_values[nnz] = coef; jac_rows[nnz] = i; jac_cols[nnz] = i; nnz++;
+            jac_values[nnz] = -coef; jac_rows[nnz] = i; jac_cols[nnz] = j; nnz++;
+            jac_values[nnz] = coef; jac_rows[nnz] = j; jac_cols[nnz] = j; nnz++;
+            jac_values[nnz] = -coef; jac_rows[nnz] = j; jac_cols[nnz] = i; nnz++;
+        }
+    }
+
+    // Layer 2 off-diagonal (lateral flux)
+    for (Index i = 0; i < n_cells; ++i) {
+        Index start = cell_neighbors_ptr[i];
+        Index end = cell_neighbors_ptr[i + 1];
+        for (Index k = start; k < end; ++k) {
+            Index j = cell_neighbors[k];
+            if (j <= i) continue;
+            Real T_ij_2 = (T2[i] + T2[j] > 0.0) ? 2.0 * T2[i] * T2[j] / (T2[i] + T2[j]) : 0.0;
+            Real coef2 = T_ij_2 * face_area[k] / face_distance[k];
+
+            jac_values[nnz] = coef2; jac_rows[nnz] = n_cells + i; jac_cols[nnz] = n_cells + i; nnz++;
+            jac_values[nnz] = -coef2; jac_rows[nnz] = n_cells + i; jac_cols[nnz] = n_cells + j; nnz++;
+            jac_values[nnz] = coef2; jac_rows[nnz] = n_cells + j; jac_cols[nnz] = n_cells + j; nnz++;
+            jac_values[nnz] = -coef2; jac_rows[nnz] = n_cells + j; jac_cols[nnz] = n_cells + i; nnz++;
+        }
     }
 }
 

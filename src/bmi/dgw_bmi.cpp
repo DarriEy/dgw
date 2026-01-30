@@ -285,8 +285,22 @@ std::unordered_map<std::string, Vector> DGW::compute_gradients(
 ) const {
     std::unordered_map<std::string, Vector> result;
     Parameters grads = compute_gradients(loss_gradient);
-    result["K"] = grads.as_2d().K;
-    result["Sy"] = grads.as_2d().Sy;
+
+    switch (config_.physics.governing_equation) {
+        case GoverningEquation::TwoLayer:
+            result["K1"] = grads.as_two_layer().K1;
+            result["K2"] = grads.as_two_layer().K2;
+            result["Sy"] = grads.as_two_layer().Sy;
+            result["Ss2"] = grads.as_two_layer().Ss2;
+            break;
+        case GoverningEquation::LinearDiffusion:
+        case GoverningEquation::Boussinesq:
+        case GoverningEquation::Confined:
+        default:
+            result["K"] = grads.as_2d().K;
+            result["Sy"] = grads.as_2d().Sy;
+            break;
+    }
     return result;
 }
 
@@ -468,14 +482,14 @@ void DGW_BMI::SetValue(std::string name, void* src) {
     Index n = model_->mesh().n_cells();
 
     if (name == "recharge") {
-        Vector r = Eigen::Map<Vector>(s, n);
-        model_->set_recharge(r);
+        cached_recharge_ = Eigen::Map<Vector>(s, n);
+        model_->set_recharge(cached_recharge_);
     } else if (name == "stream_stage") {
-        Vector stage = Eigen::Map<Vector>(s, n);
-        model_->set_stream_stage(stage);
+        cached_stream_stage_ = Eigen::Map<Vector>(s, n);
+        model_->set_stream_stage(cached_stream_stage_);
     } else if (name == "pumping") {
-        Vector pump = Eigen::Map<Vector>(s, n);
-        model_->set_pumping(pump);
+        cached_pumping_ = Eigen::Map<Vector>(s, n);
+        model_->set_pumping(cached_pumping_);
     } else {
         throw std::runtime_error("Cannot set variable: " + name);
     }
@@ -488,34 +502,35 @@ void DGW_BMI::SetValueAtIndices(
     Index n = model_->mesh().n_cells();
 
     if (name == "recharge") {
-        // Get current values first, then modify only specified indices
-        // Use a temporary that preserves existing values
-        Vector r(n);
-        r.setZero();  // TODO: ideally get current recharge to preserve other indices
+        if (cached_recharge_.size() != n) {
+            cached_recharge_ = Vector::Zero(n);
+        }
         for (int i = 0; i < count; ++i) {
             if (inds[i] >= 0 && inds[i] < n) {
-                r(inds[i]) = s[i];
+                cached_recharge_(inds[i]) = s[i];
             }
         }
-        model_->set_recharge(r);
+        model_->set_recharge(cached_recharge_);
     } else if (name == "stream_stage") {
-        Vector stage(n);
-        stage.setZero();
+        if (cached_stream_stage_.size() != n) {
+            cached_stream_stage_ = Vector::Zero(n);
+        }
         for (int i = 0; i < count; ++i) {
             if (inds[i] >= 0 && inds[i] < n) {
-                stage(inds[i]) = s[i];
+                cached_stream_stage_(inds[i]) = s[i];
             }
         }
-        model_->set_stream_stage(stage);
+        model_->set_stream_stage(cached_stream_stage_);
     } else if (name == "pumping") {
-        Vector pump(n);
-        pump.setZero();
+        if (cached_pumping_.size() != n) {
+            cached_pumping_ = Vector::Zero(n);
+        }
         for (int i = 0; i < count; ++i) {
             if (inds[i] >= 0 && inds[i] < n) {
-                pump(inds[i]) = s[i];
+                cached_pumping_(inds[i]) = s[i];
             }
         }
-        model_->set_pumping(pump);
+        model_->set_pumping(cached_pumping_);
     } else {
         throw std::runtime_error("SetValueAtIndices not available for: " + name);
     }

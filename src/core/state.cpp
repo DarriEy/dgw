@@ -111,6 +111,13 @@ void StateTwoLayer::initialize(const Mesh& mesh, Real h1_init, Real h2_init) {
 void StateTwoLayer::initialize(const Mesh& mesh, const Vector& h1_init, const Vector& h2_init) {
     const Index n = mesh.n_cells();
 
+    if (h1_init.size() != n) {
+        throw std::invalid_argument("h1_init size mismatch");
+    }
+    if (h2_init.size() != n) {
+        throw std::invalid_argument("h2_init size mismatch");
+    }
+
     h1 = h1_init;
     h1_old = h1;
     h2 = h2_init;
@@ -419,12 +426,27 @@ void State::initialize(const Mesh& mesh, const Config& config) {
         }
         case GoverningEquation::MultiLayer: {
             data_ = StateMultiLayer{};
-            // MultiLayer requires MeshLayered, defer full init
+            // Minimal init so primary_state() doesn't crash on empty head vector.
+            // Full init requires MeshLayered and should use StateMultiLayer::initialize().
+            auto& s = as_multi_layer();
+            s.n_layers = 1;
+            s.head.resize(1);
+            s.head[0] = Vector::Zero(0);
+            s.head_old.resize(1);
+            s.head_old[0] = Vector::Zero(0);
+            s.time = 0.0;
+            s.dt = 0.0;
             break;
         }
         case GoverningEquation::Richards3D: {
             data_ = StateRichards3D{};
-            // Richards requires Mesh3D, defer full init
+            // Minimal init so primary_state() doesn't crash on empty pressure_head.
+            // Full init requires Mesh3D and should use StateRichards3D::initialize().
+            auto& s = as_richards();
+            s.pressure_head = Vector::Zero(0);
+            s.pressure_head_old = Vector::Zero(0);
+            s.time = 0.0;
+            s.dt = 0.0;
             break;
         }
     }

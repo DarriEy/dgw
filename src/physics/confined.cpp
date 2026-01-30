@@ -37,8 +37,8 @@ void ConfinedSolver::compute_residual(
         if (i < 0 || j < 0) continue;
 
         const Face& face = mesh.face(f);
-        Real b_i = p.z_surface(i) - p.z_bottom(i);
-        Real b_j = p.z_surface(j) - p.z_bottom(j);
+        Real b_i = std::max(p.z_surface(i) - p.z_bottom(i), 0.0);
+        Real b_j = std::max(p.z_surface(j) - p.z_bottom(j), 0.0);
         Real T_i = p.K(i) * b_i;
         Real T_j = p.K(j) * b_j;
         Real T_ij = confined_kernels::intercell_T(T_i, T_j);
@@ -94,8 +94,8 @@ void ConfinedSolver::compute_jacobian(
         if (i < 0 || j < 0) continue;
 
         const Face& face = mesh.face(f);
-        Real b_i = p.z_surface(i) - p.z_bottom(i);
-        Real b_j = p.z_surface(j) - p.z_bottom(j);
+        Real b_i = std::max(p.z_surface(i) - p.z_bottom(i), 0.0);
+        Real b_j = std::max(p.z_surface(j) - p.z_bottom(j), 0.0);
         Real T_i = p.K(i) * b_i;
         Real T_j = p.K(j) * b_j;
         Real T_ij = confined_kernels::intercell_T(T_i, T_j);
@@ -248,7 +248,7 @@ Real ConfinedSolver::total_storage(
     Real storage = 0.0;
     for (Index i = 0; i < mesh.n_cells(); ++i) {
         Real b = p.z_surface(i) - p.z_bottom(i);
-        storage += p.Ss(i) * b * mesh.cell_volume(i) * s.head(i);
+        storage += p.Ss(i) * b * mesh.cell_volume(i) * (s.head(i) - p.z_bottom(i));
     }
     return storage;
 }

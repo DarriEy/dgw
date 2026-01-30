@@ -231,9 +231,10 @@ inline Real smooth_transmissivity(Real h, Real K, Real z_bot, Real eps = 0.01) {
     } else if (b < 0) {
         return 0.0;
     } else {
-        // Smooth transition: cubic Hermite
+        // C1 cubic Hermite: f(0)=0, f'(0)=0, f(eps)=eps, f'(eps)=1
+        // f(t) = eps * t^2 * (2 - t) where t = b/eps
         Real t = b / eps;
-        Real smooth_b = eps * t * t * (3.0 - 2.0 * t);
+        Real smooth_b = eps * t * t * (2.0 - t);
         return K * smooth_b;
     }
 }
@@ -248,8 +249,9 @@ inline Real smooth_transmissivity_dh(Real h, Real K, Real z_bot, Real eps = 0.01
     } else if (b < 0) {
         return 0.0;
     } else {
+        // Derivative of eps * t^2 * (2-t) w.r.t. h = t*(4-3t) where t=b/eps
         Real t = b / eps;
-        return K * 6.0 * t * (1.0 - t);
+        return K * t * (4.0 - 3.0 * t);
     }
 }
 

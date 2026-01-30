@@ -105,7 +105,8 @@ void Richards3DSolver::compute_residual(
     // Top boundary: recharge (adds water, reduces residual)
     if (recharge_.size() > 0) {
         for (Index i : mesh3d.surface_cells()) {
-            Real A_top = mesh.cell_volume(i) / mesh3d.layers()[0].z_top;  // Approximate
+            Real layer_thickness = mesh3d.layers()[0].z_top - mesh3d.layers()[0].z_bottom;
+            Real A_top = (layer_thickness > 0.0) ? mesh.cell_volume(i) / layer_thickness : mesh.cell_volume(i);
             residual(i) -= recharge_(i) * A_top;  // Recharge is a source, subtract from F
         }
     }
@@ -250,8 +251,8 @@ void Richards3DSolver::compute_fluxes(
         
         Real K_ij = intercell_K(i, j, s.pressure_head, retention, mesh3d);
         
-        // Positive flux = flow from i to j (consistent with other modules)
-        face_fluxes(f) = K_ij * face.area * (h_j - h_i) / face.distance;
+        // Negative sign matches residual convention: flux = -K * A * dh/dL
+        face_fluxes(f) = -K_ij * face.area * (h_j - h_i) / face.distance;
     }
 }
 

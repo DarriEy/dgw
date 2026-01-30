@@ -28,7 +28,6 @@ NewtonSolver::NewtonSolver(const SolverConfig& config) {
     config_.max_iterations = config.max_newton_iterations;
     config_.tolerance = config.newton_tolerance;
     config_.initial_relaxation = config.newton_relaxation;
-    config_.use_line_search = config.use_line_search;
 
     switch (config.nonlinear_solver) {
         case NonlinearSolver::Newton:
@@ -106,14 +105,20 @@ SolveResult NewtonSolver::solve(
         Vector neg_residual = -residual_;
         linear_solver_->solve(neg_residual, delta_x_);
 
-        // Apply update with line search or damping
-        Real alpha = config_.initial_relaxation;
+        // Apply update with line search, trust region, or damping
+        if (config_.use_trust_region) {
+            Real trust_radius = config_.initial_trust_radius;
+            trust_region_step(residual_func, jacobian_func, x, trust_radius);
+            x += delta_x_;
+        } else {
+            Real alpha = config_.initial_relaxation;
 
-        if (config_.use_line_search) {
-            alpha = line_search(residual_func, x, delta_x_, residual_);
+            if (config_.use_line_search) {
+                alpha = line_search(residual_func, x, delta_x_, residual_);
+            }
+
+            x += alpha * delta_x_;
         }
-
-        x += alpha * delta_x_;
 
         // Compute new residual
         residual_func(x, residual_);
@@ -121,8 +126,7 @@ SolveResult NewtonSolver::solve(
         residual_history_.push_back(norm);
 
         if (config_.verbose) {
-            std::cerr << "Newton iter " << (iter + 1) << ": ||F|| = " << norm
-                      << " (alpha=" << alpha << ")\n";
+            std::cerr << "Newton iter " << (iter + 1) << ": ||F|| = " << norm << "\n";
         }
 
         if (config_.callback) {
@@ -316,8 +320,6 @@ SolveResult PicardSolver::solve(
     SparseMatrix A;
     Vector b(n);
     Vector x_new(n);
-
-    linear_solver_ = std::make_unique<EigenLUSolver>();
 
     bool pattern_analyzed = false;
 

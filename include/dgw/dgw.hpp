@@ -506,7 +506,12 @@ private:
     };
     std::unordered_map<std::string, VarInfo> input_vars_;
     std::unordered_map<std::string, VarInfo> output_vars_;
-    
+
+    // Cached input vectors for incremental SetValueAtIndices
+    Vector cached_recharge_;
+    Vector cached_stream_stage_;
+    Vector cached_pumping_;
+
     void setup_variables();
 };
 

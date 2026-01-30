@@ -31,15 +31,19 @@ public:
         // Build inverse map (cell to HRU)
         cell_to_hru_ = hru_to_cell_.transpose();
 
-        // Normalize columns of cell_to_hru to sum to 1
+        // Normalize columns of cell_to_hru to sum to 1.
+        // For RowMajor storage, outerSize() iterates rows, so we must
+        // compute column sums manually.
+        Vector col_sums = Vector::Zero(cell_to_hru_.cols());
         for (int k = 0; k < cell_to_hru_.outerSize(); ++k) {
-            Real col_sum = 0.0;
             for (SparseMatrix::InnerIterator it(cell_to_hru_, k); it; ++it) {
-                col_sum += it.value();
+                col_sums(it.col()) += it.value();
             }
-            if (col_sum > 0.0) {
-                for (SparseMatrix::InnerIterator it(cell_to_hru_, k); it; ++it) {
-                    it.valueRef() /= col_sum;
+        }
+        for (int k = 0; k < cell_to_hru_.outerSize(); ++k) {
+            for (SparseMatrix::InnerIterator it(cell_to_hru_, k); it; ++it) {
+                if (col_sums(it.col()) > 0.0) {
+                    it.valueRef() /= col_sums(it.col());
                 }
             }
         }

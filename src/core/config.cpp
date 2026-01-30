@@ -215,7 +215,11 @@ bool Config::validate() const {
     if (time.end_time <= time.start_time) return false;
 
     // Validate file paths exist
-    validate_paths();
+    try {
+        validate_paths();
+    } catch (const std::exception&) {
+        return false;
+    }
 
     return true;
 }
@@ -234,7 +238,9 @@ void Config::print_summary(std::ostream& os) const {
 }
 
 void Config::validate_physics() const {
-    physics.validate();
+    if (!physics.validate()) {
+        throw std::invalid_argument("Invalid physics configuration");
+    }
 }
 
 void Config::validate_solver() const {
@@ -256,15 +262,14 @@ void Config::validate_paths() const {
 
 namespace config_io {
 
-PhysicsDecisions parse_physics(const std::string& yaml_str) {
-    PhysicsDecisions decisions;
-    // Simplified parsing - delegates to from_file
-    return decisions;
+PhysicsDecisions parse_physics(const std::string& /*yaml_str*/) {
+    // TODO: implement YAML string parsing
+    throw std::runtime_error("YAML string parsing not implemented, use Config::from_file()");
 }
 
-SolverConfig parse_solver(const std::string& yaml_str) {
-    SolverConfig config;
-    return config;
+SolverConfig parse_solver(const std::string& /*yaml_str*/) {
+    // TODO: implement YAML string parsing
+    throw std::runtime_error("YAML string parsing not implemented, use Config::from_file()");
 }
 
 std::string to_string(GoverningEquation eq) {
