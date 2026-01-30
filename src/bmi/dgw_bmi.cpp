@@ -77,6 +77,11 @@ void DGW::initialize() {
     state_ = State(config_.physics.governing_equation);
     state_.initialize(*mesh_, config_);
     setup_solver();
+
+    state_checkpoints_.clear();
+    time_checkpoints_.clear();
+    step_dts_.clear();
+    last_dt_ = 0;
 }
 
 void DGW::initialize(const State& initial_state) {
@@ -103,6 +108,27 @@ StepResult DGW::step(Real dt) {
     StepResult result;
 
     apply_source_terms();
+
+    // Set head_old = current head before solving (pre-step state)
+    switch (config_.physics.governing_equation) {
+        case GoverningEquation::Boussinesq:
+        case GoverningEquation::LinearDiffusion:
+        case GoverningEquation::Confined:
+            state_.as_2d().head_old = state_.as_2d().head;
+            break;
+        case GoverningEquation::TwoLayer:
+            state_.as_two_layer().h1_old = state_.as_two_layer().h1;
+            state_.as_two_layer().h2_old = state_.as_two_layer().h2;
+            break;
+        default:
+            break;
+    }
+
+    // Store checkpoint before solving
+    state_checkpoints_.push_back(state_.primary_state());
+    time_checkpoints_.push_back(state_.time());
+    step_dts_.push_back(dt);
+    last_dt_ = dt;
 
     Vector& primary = state_.primary_state();
     Vector h_old = primary;
@@ -272,10 +298,157 @@ void DGW::write_netcdf(const std::string& /*filename*/) const {
 #endif
 }
 
+namespace {
+
+// Helper: compute parameter gradients at one converged step via FD on the residual
+// Given adjoint lambda, accumulates -lambda^T * (dF/dtheta_i) for each param
+void compute_step_param_grads_2d(
+    PhysicsBase& physics,
+    const State& state,
+    const Parameters& params,
+    const Mesh& mesh,
+    Real dt,
+    const Vector& lambda,
+    Parameters& grad_accum,
+    Real fd_eps = 1e-8
+) {
+    const Index n = mesh.n_cells();
+
+    // Helper for central FD on a parameter vector
+    auto perturb_2d = [&](
+        const Vector& param_vec,
+        auto make_perturbed,
+        Vector& grad_out
+    ) {
+        if (grad_out.size() != n) grad_out = Vector::Zero(n);
+        for (Index i = 0; i < n; ++i) {
+            Real orig = param_vec(i);
+            // Scale perturbation by parameter magnitude for good conditioning
+            Real eps_i = fd_eps * (1.0 + std::abs(orig));
+            Parameters p_plus = make_perturbed(params, i, orig + eps_i);
+            Parameters p_minus = make_perturbed(params, i, orig - eps_i);
+            Vector Fp(n), Fm(n);
+            physics.compute_residual(state, p_plus, mesh, dt, Fp);
+            physics.compute_residual(state, p_minus, mesh, dt, Fm);
+            Vector dF = (Fp - Fm) / (2.0 * eps_i);
+            grad_out(i) += -lambda.dot(dF);
+        }
+    };
+
+    perturb_2d(params.as_2d().K,
+        [](const Parameters& p, Index i, Real v) {
+            Parameters pp = p; pp.as_2d().K(i) = v; return pp;
+        }, grad_accum.as_2d().K);
+
+    perturb_2d(params.as_2d().Sy,
+        [](const Parameters& p, Index i, Real v) {
+            Parameters pp = p; pp.as_2d().Sy(i) = v; return pp;
+        }, grad_accum.as_2d().Sy);
+}
+
+void compute_step_param_grads_two_layer(
+    PhysicsBase& physics,
+    const State& state,
+    const Parameters& params,
+    const Mesh& mesh,
+    Real dt,
+    const Vector& lambda,
+    Parameters& grad_accum,
+    Real fd_eps = 1e-8
+) {
+    const Index n = state.primary_state().size();
+
+    // Helper: central FD for a two-layer parameter vector
+    auto perturb_param = [&](auto get_vec, auto set_vec, Vector& grad_out) {
+        const Index nk = get_vec(params).size();
+        if (grad_out.size() != nk) grad_out = Vector::Zero(nk);
+        Parameters p_plus = params, p_minus = params;
+        for (Index i = 0; i < nk; ++i) {
+            Real orig = get_vec(params)(i);
+            Real eps_i = fd_eps * std::max(1.0, std::abs(orig));
+            set_vec(p_plus, i, orig + eps_i);
+            set_vec(p_minus, i, orig - eps_i);
+            Vector Fp(n), Fm(n);
+            physics.compute_residual(state, p_plus, mesh, dt, Fp);
+            physics.compute_residual(state, p_minus, mesh, dt, Fm);
+            Vector dF = (Fp - Fm) / (2.0 * eps_i);
+            grad_out(i) += -lambda.dot(dF);
+            set_vec(p_plus, i, orig);
+            set_vec(p_minus, i, orig);
+        }
+    };
+
+    perturb_param(
+        [](const Parameters& p) -> const Vector& { return p.as_two_layer().K1; },
+        [](Parameters& p, Index i, Real v) { p.as_two_layer().K1(i) = v; },
+        grad_accum.as_two_layer().K1);
+    perturb_param(
+        [](const Parameters& p) -> const Vector& { return p.as_two_layer().K2; },
+        [](Parameters& p, Index i, Real v) { p.as_two_layer().K2(i) = v; },
+        grad_accum.as_two_layer().K2);
+    perturb_param(
+        [](const Parameters& p) -> const Vector& { return p.as_two_layer().Sy; },
+        [](Parameters& p, Index i, Real v) { p.as_two_layer().Sy(i) = v; },
+        grad_accum.as_two_layer().Sy);
+    perturb_param(
+        [](const Parameters& p) -> const Vector& { return p.as_two_layer().Ss2; },
+        [](Parameters& p, Index i, Real v) { p.as_two_layer().Ss2(i) = v; },
+        grad_accum.as_two_layer().Ss2);
+}
+
+} // anonymous namespace
+
 Parameters DGW::compute_gradients(const Vector& loss_gradient) const {
     Parameters grads(config_.physics.governing_equation);
-    physics_->compute_parameter_gradients(state_, params_, *mesh_,
-        loss_gradient, grads);
+    Real dt = last_dt_ > 0 ? last_dt_ : config_.solver.dt_initial;
+
+    // Reconstruct state with correct h_old from the last checkpoint
+    State eval_state = state_;
+    if (!state_checkpoints_.empty()) {
+        const Vector& h_old = state_checkpoints_.back();
+        switch (config_.physics.governing_equation) {
+            case GoverningEquation::Boussinesq:
+            case GoverningEquation::LinearDiffusion:
+            case GoverningEquation::Confined:
+                eval_state.as_2d().head_old = h_old;
+                break;
+            case GoverningEquation::TwoLayer:
+                eval_state.as_two_layer().h1_old = h_old.head(h_old.size() / 2);
+                eval_state.as_two_layer().h2_old = h_old.tail(h_old.size() / 2);
+                break;
+            default:
+                break;
+        }
+    }
+
+    // 1. Compute Jacobian J = dF/dh at the converged state
+    SparseMatrix jac = physics_->allocate_jacobian(*mesh_);
+    physics_->compute_jacobian(eval_state, params_, *mesh_, dt, jac);
+
+    // 2. Solve J^T * lambda = loss_gradient
+    SparseMatrix jacT = jac.transpose();
+    EigenLUSolver lu;
+    lu.analyze_pattern(jacT);
+    lu.factorize(jacT);
+    Vector lambda(loss_gradient.size());
+    lu.solve(loss_gradient, lambda);
+
+    // 3. Compute parameter gradients via FD: grad_i = -lambda^T * (dF/dtheta_i)
+    switch (config_.physics.governing_equation) {
+        case GoverningEquation::Boussinesq:
+        case GoverningEquation::LinearDiffusion:
+        case GoverningEquation::Confined:
+            compute_step_param_grads_2d(
+                *physics_, eval_state, params_, *mesh_, dt, lambda, grads);
+            break;
+        case GoverningEquation::TwoLayer:
+            compute_step_param_grads_two_layer(
+                *physics_, eval_state, params_, *mesh_, dt, lambda, grads);
+            break;
+        default:
+            break;
+    }
+
     return grads;
 }
 
@@ -305,14 +478,111 @@ std::unordered_map<std::string, Vector> DGW::compute_gradients(
 }
 
 void DGW::forward_with_checkpoints() {
-    state_checkpoints_.clear();
-    time_checkpoints_.clear();
-    state_checkpoints_.push_back(state_.primary_state());
-    time_checkpoints_.push_back(state_.time());
+    // Checkpoints are already stored by step().
+    // This method signals that checkpoints are ready for adjoint_pass.
 }
 
 Parameters DGW::adjoint_pass(const Vector& final_loss_gradient) const {
-    return compute_gradients(final_loss_gradient);
+    Parameters grads(config_.physics.governing_equation);
+    const Index n_steps = static_cast<Index>(step_dts_.size());
+
+    if (n_steps == 0) {
+        return compute_gradients(final_loss_gradient);
+    }
+
+    // state_checkpoints_[t] = pre-step state (h_old for step t)
+    // After all steps, current state = final h_new
+    // For step t: h_old = checkpoint[t], h_new = checkpoint[t+1] (or current if last)
+
+    Vector lambda = final_loss_gradient;
+    const Real fd_eps = 1e-7;
+
+    for (Index t = n_steps - 1; t >= 0; --t) {
+        Real dt = step_dts_[static_cast<size_t>(t)];
+        Vector h_old = state_checkpoints_[static_cast<size_t>(t)];
+        Vector h_new = (t == n_steps - 1)
+            ? state_.primary_state()
+            : state_checkpoints_[static_cast<size_t>(t + 1)];
+
+        // Reconstruct the state at this step (converged state with h_new and h_old)
+        State step_state = state_;
+        step_state.primary_state() = h_new;
+        switch (config_.physics.governing_equation) {
+            case GoverningEquation::Boussinesq:
+            case GoverningEquation::LinearDiffusion:
+            case GoverningEquation::Confined:
+                step_state.as_2d().head_old = h_old;
+                break;
+            case GoverningEquation::TwoLayer:
+                step_state.as_two_layer().h1_old = h_old.head(h_old.size() / 2);
+                step_state.as_two_layer().h2_old = h_old.tail(h_old.size() / 2);
+                break;
+            default:
+                break;
+        }
+
+        // Compute Jacobian J = dF/dh at this step
+        SparseMatrix jac = physics_->allocate_jacobian(*mesh_);
+        physics_->compute_jacobian(step_state, params_, *mesh_, dt, jac);
+
+        // Solve J^T * mu = lambda (adjoint system)
+        SparseMatrix jacT = jac.transpose();
+        EigenLUSolver lu;
+        lu.analyze_pattern(jacT);
+        lu.factorize(jacT);
+        Vector mu(lambda.size());
+        lu.solve(lambda, mu);
+
+        // Accumulate parameter gradients at this step
+        switch (config_.physics.governing_equation) {
+            case GoverningEquation::Boussinesq:
+            case GoverningEquation::LinearDiffusion:
+            case GoverningEquation::Confined:
+                compute_step_param_grads_2d(
+                    *physics_, step_state, params_, *mesh_, dt, mu, grads, fd_eps);
+                break;
+            case GoverningEquation::TwoLayer:
+                compute_step_param_grads_two_layer(
+                    *physics_, step_state, params_, *mesh_, dt, mu, grads, fd_eps);
+                break;
+            default:
+                break;
+        }
+
+        // Propagate adjoint backward: lambda_prev = -(dF/dh_old)^T * mu
+        if (t > 0) {
+            const Index n = h_old.size();
+            Vector F0(n);
+            physics_->compute_residual(step_state, params_, *mesh_, dt, F0);
+
+            Vector lambda_new = Vector::Zero(n);
+            for (Index i = 0; i < n; ++i) {
+                State perturbed_state = step_state;
+                switch (config_.physics.governing_equation) {
+                    case GoverningEquation::Boussinesq:
+                    case GoverningEquation::LinearDiffusion:
+                    case GoverningEquation::Confined:
+                        perturbed_state.as_2d().head_old(i) += fd_eps;
+                        break;
+                    case GoverningEquation::TwoLayer:
+                        if (i < n / 2)
+                            perturbed_state.as_two_layer().h1_old(i) += fd_eps;
+                        else
+                            perturbed_state.as_two_layer().h2_old(i - n / 2) += fd_eps;
+                        break;
+                    default:
+                        break;
+                }
+                Vector F_pert(n);
+                physics_->compute_residual(perturbed_state, params_, *mesh_, dt, F_pert);
+                Vector dF_dhold_i = (F_pert - F0) / fd_eps;
+                lambda_new(i) = -mu.dot(dF_dhold_i);
+            }
+            lambda = lambda_new;
+        }
+    }
+
+    return grads;
 }
 
 Parameters DGW::check_gradients_fd(

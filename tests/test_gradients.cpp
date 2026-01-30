@@ -116,28 +116,29 @@ TEST_CASE("Boussinesq kernel gradients", "[gradients][boussinesq]") {
         Vector dL_dK_fd(n);
         
         for (Index i = 0; i < n; ++i) {
-            // Perturb K[i]
+            // Perturb K[i] — use smaller epsilon for more accurate FD
             double K_orig = K(i);
-            
+            double eps_i = std::min(FD_EPSILON, std::abs(K_orig) * FD_EPSILON);
+
             // Forward perturbation
-            K(i) = K_orig + FD_EPSILON;
+            K(i) = K_orig + eps_i;
             params.as_2d().K = K;
             model.set_parameters(params);
             model.state().as_2d().head = h_old;
             model.step(dt);
             double loss_plus = compute_loss(model.head(), h_target);
-            
+
             // Backward perturbation
-            K(i) = K_orig - FD_EPSILON;
+            K(i) = K_orig - eps_i;
             params.as_2d().K = K;
             model.set_parameters(params);
             model.state().as_2d().head = h_old;
             model.step(dt);
             double loss_minus = compute_loss(model.head(), h_target);
-            
+
             // Central difference
-            dL_dK_fd(i) = (loss_plus - loss_minus) / (2.0 * FD_EPSILON);
-            
+            dL_dK_fd(i) = (loss_plus - loss_minus) / (2.0 * eps_i);
+
             // Restore
             K(i) = K_orig;
         }
@@ -369,24 +370,25 @@ TEST_CASE("Multi-step adjoint accumulation", "[gradients][adjoint]") {
     // Verify with finite differences (just check K[0])
     Index test_idx = 0;
     double K_orig = K(test_idx);
-    
-    K(test_idx) = K_orig + FD_EPSILON;
+    double eps_k = std::min(FD_EPSILON, std::abs(K_orig) * FD_EPSILON);
+
+    K(test_idx) = K_orig + eps_k;
     params.as_2d().K = K;
     model.set_parameters(params);
     model.initialize();
     model.state().as_2d().head = h_init;
     for (int step = 0; step < n_steps; ++step) model.step(dt);
     double loss_plus = compute_loss(model.head(), h_target);
-    
-    K(test_idx) = K_orig - FD_EPSILON;
+
+    K(test_idx) = K_orig - eps_k;
     params.as_2d().K = K;
     model.set_parameters(params);
     model.initialize();
     model.state().as_2d().head = h_init;
     for (int step = 0; step < n_steps; ++step) model.step(dt);
     double loss_minus = compute_loss(model.head(), h_target);
-    
-    double dL_dK_fd = (loss_plus - loss_minus) / (2.0 * FD_EPSILON);
+
+    double dL_dK_fd = (loss_plus - loss_minus) / (2.0 * eps_k);
     double dL_dK_adjoint = adjoint_grads.as_2d().K(test_idx);
     
     double rel_error = std::abs(dL_dK_adjoint - dL_dK_fd) / (std::abs(dL_dK_fd) + 1e-10);

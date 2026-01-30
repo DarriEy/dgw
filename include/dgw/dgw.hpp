@@ -394,6 +394,8 @@ private:
     // Checkpoints for adjoint
     std::vector<Vector> state_checkpoints_;
     std::vector<Real> time_checkpoints_;
+    std::vector<Real> step_dts_;
+    mutable Real last_dt_ = 0;
     
     // Callbacks
     OutputCallback output_callback_;
