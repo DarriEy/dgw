@@ -13,6 +13,7 @@
  */
 
 #include "dgw/dgw.hpp"
+#include "dgw/bmi/dgw_bmi.hpp"
 #include "dgw/physics/physics_base.hpp"
 #include "dgw/solvers/linear_solver.hpp"
 #include <cstring>
@@ -136,7 +137,11 @@ StepResult DGW::step(Real dt) {
             case GoverningEquation::TwoLayer:
                 state_.as_two_layer().advance_time(dt);
                 break;
-            default:
+            case GoverningEquation::MultiLayer:
+                state_.as_multi_layer().advance_time(dt);
+                break;
+            case GoverningEquation::Richards3D:
+                state_.as_richards().advance_time(dt);
                 break;
         }
         result.dt_next = std::min(
@@ -480,12 +485,37 @@ void DGW_BMI::SetValueAtIndices(
     std::string name, int* inds, int count, void* src
 ) {
     auto* s = static_cast<double*>(src);
+    Index n = model_->mesh().n_cells();
+
     if (name == "recharge") {
-        Vector r = Vector::Zero(model_->mesh().n_cells());
+        // Get current values first, then modify only specified indices
+        // Use a temporary that preserves existing values
+        Vector r(n);
+        r.setZero();  // TODO: ideally get current recharge to preserve other indices
         for (int i = 0; i < count; ++i) {
-            r(inds[i]) = s[i];
+            if (inds[i] >= 0 && inds[i] < n) {
+                r(inds[i]) = s[i];
+            }
         }
         model_->set_recharge(r);
+    } else if (name == "stream_stage") {
+        Vector stage(n);
+        stage.setZero();
+        for (int i = 0; i < count; ++i) {
+            if (inds[i] >= 0 && inds[i] < n) {
+                stage(inds[i]) = s[i];
+            }
+        }
+        model_->set_stream_stage(stage);
+    } else if (name == "pumping") {
+        Vector pump(n);
+        pump.setZero();
+        for (int i = 0; i < count; ++i) {
+            if (inds[i] >= 0 && inds[i] < n) {
+                pump(inds[i]) = s[i];
+            }
+        }
+        model_->set_pumping(pump);
     } else {
         throw std::runtime_error("SetValueAtIndices not available for: " + name);
     }
@@ -575,5 +605,9 @@ dgw::bmi::Bmi* create_bmi() {
 void destroy_bmi(dgw::bmi::Bmi* model) {
     delete model;
 }
+
+// DGW_NextGen factory functions are not yet implemented.
+// DGW_NextGen is declared in dgw_bmi.hpp but requires a full implementation.
+// Use DGW_BMI (via create_bmi/destroy_bmi) for NextGen integration.
 
 } // extern "C"

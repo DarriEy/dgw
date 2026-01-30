@@ -181,8 +181,9 @@ public:
     Index n_faces() const override { return static_cast<Index>(faces_.size()); }
     Index n_nodes() const override { return static_cast<Index>(node_x_.size()); }
     Index dimension() const override { return 2; }
-    
+
     const Cell& cell(Index i) const override { return cells_[i]; }
+    Cell& cell_mut(Index i) { return cells_[i]; }
     Real cell_volume(Index i) const override { return cells_[i].volume; }
     Vec3 cell_centroid(Index i) const override { return cells_[i].centroid; }
     

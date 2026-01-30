@@ -144,6 +144,7 @@ public:
      * @brief Apply boundary conditions to residual and Jacobian
      */
     virtual void apply_boundary_conditions(
+        const State& state,
         const Mesh& mesh,
         const Parameters& params,
         Vector& residual,

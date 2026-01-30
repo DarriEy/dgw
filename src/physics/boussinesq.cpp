@@ -165,10 +165,15 @@ void BoussinesqSolver::compute_jacobian(
         Real coef = W_ij / L_ij;
         Real dh = h_j - h_i;
         
-        // Simplified: assuming harmonic mean T_ij
-        // ∂T_ij/∂h_i ≈ 0.5 * dT_i (rough approximation)
-        Real dQ_dhi = -T_ij * coef + dh * coef * 0.5 * dT_i;
-        Real dQ_dhj = +T_ij * coef + dh * coef * 0.5 * dT_j;
+        // Harmonic mean: T_ij = 2*T_i*T_j/(T_i+T_j)
+        // ∂T_ij/∂h_i = 2*T_j^2/(T_i+T_j)^2 * dT_i
+        // ∂T_ij/∂h_j = 2*T_i^2/(T_i+T_j)^2 * dT_j
+        Real denom_T = T_i + T_j + 1e-30;
+        Real dTij_dhi = 2.0 * T_j * T_j / (denom_T * denom_T) * dT_i;
+        Real dTij_dhj = 2.0 * T_i * T_i / (denom_T * denom_T) * dT_j;
+
+        Real dQ_dhi = -T_ij * coef + dh * coef * dTij_dhi;
+        Real dQ_dhj = +T_ij * coef + dh * coef * dTij_dhj;
         
         // Contribution to cell i residual
         // F_i -= Q, so ∂F_i/∂h_i -= ∂Q/∂h_i, ∂F_i/∂h_j -= ∂Q/∂h_j
@@ -296,49 +301,52 @@ void BoussinesqSolver::set_pumping(const Vector& pumping) {
 }
 
 void BoussinesqSolver::apply_boundary_conditions(
+    const State& state,
     const Mesh& mesh,
     const Parameters& params,
     Vector& residual,
     SparseMatrix& jacobian
 ) const {
+    const auto& s = state.as_2d();
+
     // Apply BCs at boundary faces
     for (Index f : mesh.boundary_faces()) {
         const Face& face = mesh.face(f);
         Index cell = (face.cell_left >= 0) ? face.cell_left : face.cell_right;
-        
+
         switch (face.bc_type) {
             case BoundaryType::NoFlow:
                 // Nothing to do - no flux contribution
                 break;
-                
+
             case BoundaryType::FixedHead: {
-                // Strong enforcement: replace equation
+                // Strong enforcement: replace equation with h - h_bc = 0
                 Real h_bc = face.bc_value;
-                residual(cell) = 0.0;  // Will be handled by direct substitution
+                residual(cell) = s.head(cell) - h_bc;
                 // Zero out row and set diagonal to 1
                 for (SparseMatrix::InnerIterator it(jacobian, cell); it; ++it) {
                     it.valueRef() = (it.col() == cell) ? 1.0 : 0.0;
                 }
                 break;
             }
-            
+
             case BoundaryType::FixedFlux: {
                 // Add specified flux to residual
                 Real q_bc = face.bc_value;  // [m³/s]
                 residual(cell) -= q_bc;
                 break;
             }
-            
+
             case BoundaryType::GeneralHead: {
-                // Ghost cell approach: Q = C * (h_external - h)
+                // Q = C * (h_external - h): positive = inflow
                 Real h_ext = face.bc_value;
                 Real C = params.boundary().ghb_conductance(f);
-                residual(cell) += C * (h_ext - residual(cell));  // Incorrect, fix later
-                // Add to Jacobian diagonal
-                // jacobian.coeffRef(cell, cell) += C;
+                residual(cell) -= C * (h_ext - s.head(cell));
+                // Jacobian: d(-C*(h_ext - h))/dh = C
+                jacobian.coeffRef(cell, cell) += C;
                 break;
             }
-            
+
             default:
                 break;
         }

@@ -84,11 +84,14 @@ void Richards3DSolver::compute_residual(
         Real flux = -K_ij * A_ij * (h_j - h_i) / L_ij;
         
         // Add to residuals (divergence)
-        // ∂θ/∂t = -∇·q → residual = storage - div(q)
+        // ∂θ/∂t = div(K∇h) - S → residual = storage - div(K∇h) + S = 0
+        // flux = -K*A*(h_j - h_i)/L is outward Darcy flux from i (q·n·A)
+        // div(q)·V for cell i = +flux, and div(K∇h) = -div(q)
+        // So: F_i = storage + flux + sink = 0
         #pragma omp atomic
-        residual(i) -= flux;  // Flux leaving cell i
+        residual(i) += flux;   // +flux because F = storage + div(q)
         #pragma omp atomic
-        residual(j) += flux;  // Flux entering cell j
+        residual(j) -= flux;   // opposite sign for neighbor
     }
     
     // Source/sink terms
@@ -96,14 +99,14 @@ void Richards3DSolver::compute_residual(
     for (Index i = 0; i < n; ++i) {
         Real V_i = mesh.cell_volume(i);
         Real sink = compute_sink(i, mesh3d);
-        residual(i) -= sink * V_i;
+        residual(i) += sink * V_i;
     }
     
-    // Top boundary: recharge
+    // Top boundary: recharge (adds water, reduces residual)
     if (recharge_.size() > 0) {
         for (Index i : mesh3d.surface_cells()) {
             Real A_top = mesh.cell_volume(i) / mesh3d.layers()[0].z_top;  // Approximate
-            residual(i) -= recharge_(i) * A_top;
+            residual(i) -= recharge_(i) * A_top;  // Recharge is a source, subtract from F
         }
     }
 }
@@ -205,15 +208,15 @@ void Richards3DSolver::compute_jacobian(
         Real dQ_dpsi_i = -dK_dpsi_i * A_ij / L_ij * dh + cond;
         Real dQ_dpsi_j = -dK_dpsi_j * A_ij / L_ij * dh - cond;
         
-        // Contribution to residual i: F_i -= Q (flux leaving i)
-        // ∂F_i/∂ψ_i -= ∂Q/∂ψ_i
-        // ∂F_i/∂ψ_j -= ∂Q/∂ψ_j
-        triplets.emplace_back(i, i, -dQ_dpsi_i);
-        triplets.emplace_back(i, j, -dQ_dpsi_j);
-        
-        // Contribution to residual j: F_j += Q (flux entering j)
-        triplets.emplace_back(j, i, +dQ_dpsi_i);
-        triplets.emplace_back(j, j, +dQ_dpsi_j);
+        // Contribution to residual i: F_i += flux (outward Darcy flux)
+        // ∂F_i/∂ψ_i += ∂flux/∂ψ_i
+        // ∂F_i/∂ψ_j += ∂flux/∂ψ_j
+        triplets.emplace_back(i, i, +dQ_dpsi_i);
+        triplets.emplace_back(i, j, +dQ_dpsi_j);
+
+        // Contribution to residual j: F_j -= flux (opposite sign)
+        triplets.emplace_back(j, i, -dQ_dpsi_i);
+        triplets.emplace_back(j, j, -dQ_dpsi_j);
     }
     
     // Assemble
@@ -247,7 +250,8 @@ void Richards3DSolver::compute_fluxes(
         
         Real K_ij = intercell_K(i, j, s.pressure_head, retention, mesh3d);
         
-        face_fluxes(f) = -K_ij * face.area * (h_j - h_i) / face.distance;
+        // Positive flux = flow from i to j (consistent with other modules)
+        face_fluxes(f) = K_ij * face.area * (h_j - h_i) / face.distance;
     }
 }
 
@@ -338,6 +342,7 @@ void Richards3DSolver::set_evapotranspiration(
 }
 
 void Richards3DSolver::apply_boundary_conditions(
+    const State& state,
     const Mesh& mesh,
     const Parameters& params,
     Vector& residual,
@@ -395,6 +400,7 @@ Vector Richards3DSolver::water_table_elevation(
     const Index n_layers_e = mesh3d.n_layers() > 0 ? mesh3d.n_layers() : 1;
     const Index n_cols_e = mesh3d.n_cells() / n_layers_e;
     Vector elevation(n_cols_e);
+    elevation.setConstant(mesh3d.min_coords().z());  // Default: bottom of domain
 
     for (Index col = 0; col < n_cols_e; ++col) {
         // Linear interpolation to find z where ψ = 0
@@ -607,9 +613,9 @@ void residual_kernel_3d(
             residual[i] = (theta[i] - theta_old[i]) * cell_volume[i] / dt;
         }
         
-        // Source term
+        // Source/sink term (positive sink = extraction, adds to residual)
         if (source) {
-            residual[i] -= source[i] * cell_volume[i];
+            residual[i] += source[i] * cell_volume[i];
         }
     }
     
@@ -641,12 +647,9 @@ void residual_kernel_3d(
             Real L = face_distance[f];
             Real flux = -K_face * A * (h_other - h_i) / L;
             
-            // Sign convention: flux positive leaving cell i
-            if (i == i_face) {
-                residual[i] += flux;
-            } else {
-                residual[i] -= flux;
-            }
+            // flux = -K*A*(h_other - h_i)/L is outward Darcy flux from cell i
+            // F_i += outward_flux (consistent with class method sign convention)
+            residual[i] += flux;
         }
     }
 }

@@ -214,6 +214,9 @@ bool Config::validate() const {
     if (solver.dt_initial <= 0) return false;
     if (time.end_time <= time.start_time) return false;
 
+    // Validate file paths exist
+    validate_paths();
+
     return true;
 }
 

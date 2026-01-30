@@ -535,12 +535,13 @@ Ptr<Mesh> Mesh::create_structured_2d(
             face.distance = dx;
             face.normal = Vec3(1, 0, 0);
             face.centroid = Vec3(i * dx, (j + 0.5) * dy, 0);
-            face.bc_type = (i == 0 || i == nx) ? BoundaryType::NoFlow : BoundaryType::NoFlow;
-            
+            face.bc_type = BoundaryType::NoFlow;
+            face.bc_value = 0.0;
+
             mesh->add_face(face);
         }
     }
-    
+
     // Horizontal faces (between rows)
     for (Index j = 0; j <= ny; ++j) {
         for (Index i = 0; i < nx; ++i) {
@@ -552,12 +553,24 @@ Ptr<Mesh> Mesh::create_structured_2d(
             face.distance = dy;
             face.normal = Vec3(0, 1, 0);
             face.centroid = Vec3((i + 0.5) * dx, j * dy, 0);
-            face.bc_type = (j == 0 || j == ny) ? BoundaryType::NoFlow : BoundaryType::NoFlow;
+            face.bc_type = BoundaryType::NoFlow;
+            face.bc_value = 0.0;
             
             mesh->add_face(face);
         }
     }
     
+    // Populate cell face lists from face connectivity
+    for (Index f = 0; f < static_cast<Index>(mesh->n_faces()); ++f) {
+        const Face& face = mesh->face(f);
+        if (face.cell_left >= 0) {
+            mesh->cell_mut(face.cell_left).faces.push_back(f);
+        }
+        if (face.cell_right >= 0) {
+            mesh->cell_mut(face.cell_right).faces.push_back(f);
+        }
+    }
+
     mesh->finalize();
     return mesh;
 }

@@ -241,20 +241,21 @@ private:
     void allocate_jacobian();
 };
 
+} // namespace dgw
+
 // ============================================================================
-// Factory Function (for dynamic loading)
+// Factory Functions (for dynamic loading)
 // ============================================================================
 
 /**
- * @brief Create a new DGW instance
- * 
- * This is the entry point for NextGen's dynamic library loading.
+ * @brief Factory functions for NextGen's dynamic library loading.
+ *
+ * Note: extern "C" must be at namespace scope (outside dgw namespace).
  */
 extern "C" {
-    DGW_NextGen* create_dgw();
-    void destroy_dgw(DGW_NextGen* model);
-    bmi::Bmi* create_bmi();
-    void destroy_bmi(bmi::Bmi* model);
+    dgw::bmi::Bmi* create_bmi();
+    void destroy_bmi(dgw::bmi::Bmi* model);
+    // DGW_NextGen factory functions not yet available (class not implemented):
+    // dgw::DGW_NextGen* create_dgw();
+    // void destroy_dgw(dgw::DGW_NextGen* model);
 }
-
-} // namespace dgw

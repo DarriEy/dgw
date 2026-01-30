@@ -173,6 +173,7 @@ private:
     Vector residual_;
     Vector delta_x_;
     SparseMatrix jacobian_;
+    bool pattern_pre_analyzed_ = false;
     
     // Line search
     Real line_search(

@@ -17,6 +17,7 @@
 #include <pybind11/functional.h>
 
 #include "dgw/dgw.hpp"
+#include <cstring>
 
 namespace py = pybind11;
 using namespace dgw;
@@ -96,6 +97,12 @@ PYBIND11_MODULE(dgw_py, m) {
         .value("FullRichards", VadoseMethod::FullRichards)
         .export_values();
     
+    py::enum_<StorageMethod>(m, "StorageMethod")
+        .value("Constant", StorageMethod::Constant)
+        .value("DepthDependent", StorageMethod::DepthDependent)
+        .value("Hysteretic", StorageMethod::Hysteretic)
+        .export_values();
+
     py::enum_<RetentionModel>(m, "RetentionModel")
         .value("VanGenuchten", RetentionModel::VanGenuchten)
         .value("BrooksCorey", RetentionModel::BrooksCorey)
@@ -393,8 +400,9 @@ PYBIND11_MODULE(dgw_py, m) {
             // 4. Return new state and info needed for backward
             
             py::array_t<double> h_new(h_old.size());
-            // ... actual computation ...
-            
+            // Zero-initialize until actual computation is implemented
+            std::memset(h_new.mutable_data(), 0, h_new.size() * sizeof(double));
+
             return std::make_tuple(
                 h_new,
                 py::make_tuple(h_old, h_new, K, Sy, recharge, dt)
@@ -423,8 +431,12 @@ PYBIND11_MODULE(dgw_py, m) {
             py::array_t<double> d_K(n);
             py::array_t<double> d_Sy(n);
             py::array_t<double> d_recharge(n);
-            
-            // ... actual adjoint computation using Enzyme ...
+
+            // Zero-initialize until actual Enzyme adjoint is implemented
+            std::memset(d_h_old.mutable_data(), 0, n * sizeof(double));
+            std::memset(d_K.mutable_data(), 0, n * sizeof(double));
+            std::memset(d_Sy.mutable_data(), 0, n * sizeof(double));
+            std::memset(d_recharge.mutable_data(), 0, n * sizeof(double));
             
             return std::make_tuple(
                 d_h_old, d_K, d_Sy, d_recharge,

@@ -87,6 +87,10 @@ UniquePtr<PhysicsBase> create_physics(GoverningEquation type) {
             return std::make_unique<TwoLayerSolver>(decisions);
         case GoverningEquation::Richards3D:
             return std::make_unique<Richards3DSolver>(decisions);
+        case GoverningEquation::MultiLayer:
+            throw std::runtime_error(
+                "MultiLayer physics solver is not yet implemented. "
+                "Use TwoLayer for two-layer systems or Richards3D for full 3D.");
         default:
             throw std::runtime_error("Unknown physics type");
     }

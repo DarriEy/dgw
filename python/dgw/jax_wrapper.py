@@ -31,11 +31,11 @@ except ImportError:
     HAS_JAX = False
 
 try:
-    import dgw_core
+    import dgw_py
     HAS_DGW = True
 except ImportError:
     HAS_DGW = False
-    print("Warning: dgw_core not found. Build with: cmake .. && make")
+    print("Warning: dgw_py not found. Build with: cmake .. && make")
 
 
 class DGWState(NamedTuple):
@@ -83,25 +83,24 @@ class DGWModel:
     def __init__(self, config_file: Optional[str] = None):
         """Initialize model from config file."""
         if not HAS_DGW:
-            raise RuntimeError("dgw_core not available")
-        
-        self._model = dgw_core.DGW()
+            raise RuntimeError("dgw_py not available")
+
+        self._model = None
         self._initialized = False
-        
+
         if config_file:
             self.initialize(config_file)
-    
+
     def initialize(self, config_file: str):
         """Initialize from configuration file."""
-        self._model.initialize(config_file)
+        self._model = dgw_py.DGW.from_config(config_file)
         self._initialized = True
-        self._n_cells = self._model.mesh.n_cells()
+        self._n_cells = self._model.mesh().n_cells()
     
     @classmethod
     def from_config(cls, config_file: str) -> 'DGWModel':
         """Create model from config file."""
-        model = cls()
-        model.initialize(config_file)
+        model = cls(config_file)
         return model
     
     @property
@@ -112,18 +111,18 @@ class DGWModel:
     @property
     def mesh(self):
         """Access mesh object."""
-        return self._model.mesh
+        return self._model.mesh()
     
     def get_state(self) -> DGWState:
         """Get current model state."""
-        head = np.array(self._model.get_value("head"))
-        time = self._model.get_current_time()
-        storage = self._model.get_total_storage()
+        head = np.array(self._model.head())
+        time = self._model.time()
+        storage = self._model.total_storage()
         return DGWState(head=head, time=time, storage=storage)
     
     def set_state(self, state: DGWState):
         """Set model state."""
-        self._model.set_value("head", state.head)
+        self._model.state().set_head(state.head)
     
     def step(self, dt: float, 
              recharge: Optional[np.ndarray] = None,
@@ -145,9 +144,9 @@ class DGWModel:
         if recharge is not None:
             self._model.set_recharge(recharge)
         if river_stage is not None:
-            self._model.set_river_stage(river_stage)
+            self._model.set_stream_stage(river_stage)
         if pumping is not None:
-            self._model.set_value("pumping", pumping)
+            self._model.set_pumping(pumping)
         
         # Step forward
         self._model.step(dt)
@@ -173,11 +172,13 @@ class DGWModel:
         Returns:
             Final state after simulation
         """
-        # Set parameters
-        self._model.set_value("hydraulic_conductivity", params.K)
-        self._model.set_value("specific_yield", params.Sy)
-        if params.streambed_K is not None:
-            self._model.set_value("streambed_conductivity", params.streambed_K)
+        # Set parameters via Parameters object
+        p = self._model.parameters()
+        # Parameters are updated through the C++ object reference
+        # For now, re-pack and unpack trainable parameters
+        n_cells = self._n_cells
+        packed = np.concatenate([np.log(params.K), params.Sy])
+        p.unpack_trainable(packed)
         
         # Set initial state
         if initial_state is not None:
@@ -217,21 +218,20 @@ class DGWModel:
         """
         # Forward simulation
         final_state = self.simulate(params, forcings, dt, n_steps)
-        
+
         # Compute loss gradient: ∂L/∂h = 2*(h - obs)
         loss_grad = 2.0 * (final_state.head - observed)
-        
-        # Run adjoint
-        self._model.run_adjoint("head", loss_grad)
-        
-        # Extract parameter gradients
-        dK = np.array(self._model.get_parameter_gradient("hydraulic_conductivity"))
-        dSy = np.array(self._model.get_parameter_gradient("specific_yield"))
-        
+
+        # Compute gradients via adjoint method
+        grad_map = self._model.compute_gradients(loss_grad)
+
+        dK = np.array(grad_map.get("K", np.zeros(self._n_cells)))
+        dSy = np.array(grad_map.get("Sy", np.zeros(self._n_cells)))
+
         dStreamK = None
         if params.streambed_K is not None:
-            dStreamK = np.array(self._model.get_parameter_gradient("streambed_conductivity"))
-        
+            dStreamK = np.array(grad_map.get("streambed_K", np.zeros(self._n_cells)))
+
         return DGWParams(K=dK, Sy=dSy, streambed_K=dStreamK)
 
 
@@ -315,12 +315,12 @@ if HAS_JAX and HAS_DGW:
         )
         _global_model.simulate(params, forcings_np, dt, n_steps)
         
-        # Run adjoint through C++ Enzyme
-        _global_model._model.run_adjoint("head", adjoint_seed)
-        
-        # Get parameter gradients
-        dK = np.array(_global_model._model.get_parameter_gradient("hydraulic_conductivity"))
-        dSy = np.array(_global_model._model.get_parameter_gradient("specific_yield"))
+        # Compute gradients via C++ adjoint
+        grad_map = _global_model._model.compute_gradients(adjoint_seed)
+
+        # Extract parameter gradients
+        dK = np.array(grad_map.get("K", np.zeros(n_cells)))
+        dSy = np.array(grad_map.get("Sy", np.zeros(n_cells)))
         
         # Pack gradients
         grad_params = jnp.concatenate([jnp.array(dK), jnp.array(dSy)])
@@ -433,12 +433,14 @@ def calibrate_model(model: DGWModel,
         # Update
         opt_state = opt_update(i, grads, opt_state)
         
-        # Apply bounds
+        # Apply bounds (project without resetting optimizer momentum)
         params = get_params(opt_state)
         K = jnp.clip(params[:n_cells], bounds['K'][0], bounds['K'][1])
         Sy = jnp.clip(params[n_cells:], bounds['Sy'][0], bounds['Sy'][1])
-        params = jnp.concatenate([K, Sy])
-        opt_state = opt_init(params)  # Reset with clipped params
+        clipped = jnp.concatenate([K, Sy])
+        # Only re-init if clipping actually changed values, to preserve momentum
+        if not jnp.allclose(params, clipped):
+            opt_state = opt_init(clipped)
         
         # Convergence check
         if len(loss_history) > 10:

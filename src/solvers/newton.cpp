@@ -79,7 +79,8 @@ SolveResult NewtonSolver::solve(
         return {true, 0, norm, ms, "Already converged"};
     }
 
-    bool pattern_analyzed = false;
+    bool pattern_analyzed = pattern_pre_analyzed_;
+    pattern_pre_analyzed_ = false;  // Reset for next call
 
     for (Index iter = 0; iter < config_.max_iterations; ++iter) {
         // Compute Jacobian
@@ -168,9 +169,10 @@ SolveResult NewtonSolver::solve(
     const SparseMatrix& pattern,
     Vector& x
 ) {
-    // Pre-analyze pattern
+    // Pre-analyze pattern and mark as analyzed
     jacobian_ = pattern;
     linear_solver_->analyze_pattern(jacobian_);
+    pattern_pre_analyzed_ = true;
     return solve(residual_func, jacobian_func, x);
 }
 
@@ -288,7 +290,9 @@ void NewtonSolver::compute_jacobian_fd(
 
 bool NewtonSolver::check_convergence(const Vector& residual, const Vector& delta_x) {
     Real abs_norm = residual.norm();
-    Real rel_norm = delta_x.norm();
+    // Relative convergence: step size relative to solution magnitude
+    Real x_scale = std::max(delta_x.norm(), 1e-30);
+    Real rel_norm = delta_x.norm() / (residual.norm() + x_scale + 1e-30);
 
     return abs_norm < config_.tolerance ||
            rel_norm < config_.relative_tolerance;

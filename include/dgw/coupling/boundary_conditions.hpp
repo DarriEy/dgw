@@ -150,8 +150,14 @@ public:
             residual(cell) = head(cell) - face.bc_value;
 
             // Zero out Jacobian row and set diagonal to 1
-            for (SparseMatrix::InnerIterator it(jacobian, cell); it; ++it) {
-                it.valueRef() = (it.col() == cell) ? 1.0 : 0.0;
+            // For column-major storage, InnerIterator(j, k) iterates column k.
+            // To zero row 'cell', we must iterate all columns and zero entries in that row.
+            for (Index k = 0; k < jacobian.outerSize(); ++k) {
+                for (SparseMatrix::InnerIterator it(jacobian, k); it; ++it) {
+                    if (it.row() == cell) {
+                        it.valueRef() = (it.col() == cell) ? 1.0 : 0.0;
+                    }
+                }
             }
         }
     }

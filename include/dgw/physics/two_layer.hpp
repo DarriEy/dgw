@@ -85,6 +85,7 @@ public:
     void set_pumping_layer(Index layer, const Vector& pumping);
     
     void apply_boundary_conditions(
+        const State& state,
         const Mesh& mesh,
         const Parameters& params,
         Vector& residual,

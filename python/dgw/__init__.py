@@ -46,6 +46,7 @@ GoverningEquation = _dgw.GoverningEquation
 TransmissivityMethod = _dgw.TransmissivityMethod
 StreamExchangeMethod = _dgw.StreamExchangeMethod
 VadoseMethod = _dgw.VadoseMethod
+StorageMethod = _dgw.StorageMethod
 RetentionModel = _dgw.RetentionModel
 BoundaryType = _dgw.BoundaryType
 
@@ -282,7 +283,7 @@ try:
             Time series of storage, mass balance, etc.
         """
         # Extract mesh data for JAX (must be static)
-        mesh = model.mesh
+        mesh = model.mesh()
         mesh_data = {
             'n_cells': mesh.n_cells(),
             'neighbors': ...,  # Would extract connectivity
@@ -502,10 +503,17 @@ class RoutingCoupler:
     def receive_exchange(self) -> np.ndarray:
         """
         Receive stream-aquifer exchange for routing.
-        
+
         Returns
         -------
         ndarray
             Exchange at each reach [m³/s], positive = gaining
         """
-        return self.dgw.get_stream_exchange()
+        cell_exchange = np.array(self.dgw.get_stream_exchange())
+        # Remap from cell exchange to reach exchange
+        n_reaches = len(self._reach_to_cell)
+        reach_exchange = np.zeros(n_reaches)
+        for reach, cell in enumerate(self._reach_to_cell):
+            if cell >= 0:
+                reach_exchange[reach] = cell_exchange[cell]
+        return reach_exchange

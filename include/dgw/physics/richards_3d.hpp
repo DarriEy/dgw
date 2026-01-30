@@ -94,6 +94,7 @@ public:
     void set_evapotranspiration(const Vector& et_rate, const Vector& root_distribution);
     
     void apply_boundary_conditions(
+        const State& state,
         const Mesh& mesh,
         const Parameters& params,
         Vector& residual,

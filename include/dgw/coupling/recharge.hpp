@@ -142,12 +142,14 @@ private:
                 effective_recharge(i) = surface_recharge(i);
             } else {
                 // Partial arrival - simple linear delay
+                // Fraction that arrives directly
                 Real fraction = dt / travel_time;
-                vadose_storage_(i) += surface_recharge(i) * dt * (1.0 - fraction);
-                effective_recharge(i) = surface_recharge(i) * fraction
-                                      + vadose_storage_(i) / travel_time;
+                effective_recharge(i) = surface_recharge(i) * fraction;
 
-                // Drain storage
+                // Remainder goes to vadose storage
+                vadose_storage_(i) += surface_recharge(i) * dt * (1.0 - fraction);
+
+                // Drain existing vadose storage
                 Real drain = std::min(vadose_storage_(i), vadose_storage_(i) * dt / travel_time);
                 vadose_storage_(i) -= drain;
                 effective_recharge(i) += drain / dt;

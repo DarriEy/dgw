@@ -180,7 +180,7 @@ void WaterRetentionParams::initialize_from_texture(const std::vector<std::string
         alpha(i) = vg.alpha;
         n_vg(i) = vg.n;
         m_vg(i) = 1.0 - 1.0 / vg.n;
-        K_sat(i) = 1e-5;  // Default Ksat
+        K_sat(i) = vg.K_sat;
     }
 }
 
@@ -438,6 +438,24 @@ void Parameters::load(const std::string& filename, const Mesh& mesh) {
             }
             break;
         }
+        case GoverningEquation::TwoLayer: {
+            auto& p = params_two_layer_;
+            p.K1.resize(n);
+            p.K2.resize(n);
+            p.Sy.resize(n);
+            p.Ss2.resize(n);
+            p.K_confining.resize(n);
+            p.thickness_confining.resize(n);
+
+            for (Index i = 0; i < n && std::getline(file, line); ++i) {
+                std::istringstream iss(line);
+                char comma;
+                iss >> p.K1(i) >> comma >> p.K2(i) >> comma
+                    >> p.Sy(i) >> comma >> p.Ss2(i) >> comma
+                    >> p.K_confining(i) >> comma >> p.thickness_confining(i);
+            }
+            break;
+        }
         default:
             break;
     }
@@ -458,6 +476,16 @@ void Parameters::save(const std::string& filename) const {
             for (Index i = 0; i < p.K.size(); ++i) {
                 file << p.K(i) << "," << p.Sy(i) << ","
                      << p.Ss(i) << "," << p.z_surface(i) << "," << p.z_bottom(i) << "\n";
+            }
+            break;
+        }
+        case GoverningEquation::TwoLayer: {
+            const auto& p = params_two_layer_;
+            file << "K1,K2,Sy,Ss2,K_confining,thickness_confining\n";
+            for (Index i = 0; i < p.K1.size(); ++i) {
+                file << p.K1(i) << "," << p.K2(i) << ","
+                     << p.Sy(i) << "," << p.Ss2(i) << ","
+                     << p.K_confining(i) << "," << p.thickness_confining(i) << "\n";
             }
             break;
         }

@@ -148,6 +148,12 @@ void StateMultiLayer::initialize(const MeshLayered& mesh, const std::vector<Real
     n_layers = mesh.n_layers();
     Index n_cols = mesh.base_mesh().n_cells();
 
+    if (static_cast<Index>(initial_heads.size()) != n_layers) {
+        throw std::invalid_argument(
+            "initial_heads size (" + std::to_string(initial_heads.size()) +
+            ") must match number of layers (" + std::to_string(n_layers) + ")");
+    }
+
     head.resize(n_layers);
     head_old.resize(n_layers);
     for (Index k = 0; k < n_layers; ++k) {
@@ -220,6 +226,11 @@ void StateRichards3D::initialize(const Mesh3D& mesh, Real initial_psi) {
 
 void StateRichards3D::initialize(const Mesh3D& mesh, const Vector& initial_psi) {
     const Index n = mesh.n_cells();
+    if (initial_psi.size() != n) {
+        throw std::invalid_argument(
+            "initial_psi size (" + std::to_string(initial_psi.size()) +
+            ") must match mesh n_cells (" + std::to_string(n) + ")");
+    }
     pressure_head = initial_psi;
     pressure_head_old = pressure_head;
 
@@ -341,6 +352,32 @@ void StateRichards3D::update_constitutive(
                 specific_moisture_capacity(i) =
                     (theta_s(i) - theta_r(i)) * lambda * Se / std::abs(psi);
             }
+        } else if (model == RetentionModel::ClappHornberger) {
+            // Clapp-Hornberger model: uses same parameter slots as Brooks-Corey
+            // alpha -> psi_s (air entry pressure), n_vg -> b (pore size index)
+            Real psi_s = alpha(i);
+            Real b = n_vg(i);
+
+            if (psi >= -psi_s) {
+                saturation(i) = 1.0;
+                water_content(i) = theta_s(i);
+                hydraulic_conductivity(i) = K_sat(i);
+                specific_moisture_capacity(i) = 0.0;
+            } else {
+                Real Se = std::pow(psi_s / std::abs(psi), 1.0 / b);
+                saturation(i) = Se;
+                water_content(i) = theta_r(i) + (theta_s(i) - theta_r(i)) * Se;
+                Real Kr = std::pow(Se, 2.0 * b + 3.0);
+                hydraulic_conductivity(i) = K_sat(i) * Kr;
+                specific_moisture_capacity(i) =
+                    (theta_s(i) - theta_r(i)) * Se / (b * std::abs(psi));
+            }
+        } else if (model == RetentionModel::Tabulated) {
+            // Tabulated model not yet implemented - fall back to saturated
+            saturation(i) = 1.0;
+            water_content(i) = theta_s(i);
+            hydraulic_conductivity(i) = K_sat(i);
+            specific_moisture_capacity(i) = 0.0;
         }
     }
 }

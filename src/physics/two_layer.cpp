@@ -141,9 +141,11 @@ void TwoLayerSolver::set_pumping_layer(Index layer, const Vector& pumping) {
 }
 
 void TwoLayerSolver::apply_boundary_conditions(
+    const State& state,
     const Mesh& mesh, const Parameters& params,
     Vector& residual, SparseMatrix& jacobian
 ) const {
+    const auto& s = state.as_two_layer();
     const Index n = mesh.n_cells();
 
     for (Index f : mesh.boundary_faces()) {
@@ -152,11 +154,20 @@ void TwoLayerSolver::apply_boundary_conditions(
 
         switch (face.bc_type) {
             case BoundaryType::NoFlow: break;
-            case BoundaryType::FixedHead:
-                // Apply to both layers
-                residual(cell) = 0.0;
-                residual(n + cell) = 0.0;
+            case BoundaryType::FixedHead: {
+                Real h_bc = face.bc_value;
+                // Apply to both layers: replace equation with h - h_bc = 0
+                residual(cell) = s.h1(cell) - h_bc;
+                residual(n + cell) = s.h2(cell) - h_bc;
+                // Zero out Jacobian rows and set diagonal to 1
+                for (SparseMatrix::InnerIterator it(jacobian, cell); it; ++it) {
+                    it.valueRef() = (it.row() == cell) ? 1.0 : 0.0;
+                }
+                for (SparseMatrix::InnerIterator it(jacobian, n + cell); it; ++it) {
+                    it.valueRef() = (it.row() == static_cast<SparseMatrix::StorageIndex>(n + cell)) ? 1.0 : 0.0;
+                }
                 break;
+            }
             default: break;
         }
     }

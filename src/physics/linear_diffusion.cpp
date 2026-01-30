@@ -167,9 +167,12 @@ void LinearDiffusion::set_stream_stage(const Vector& s) { stream_stage_ = s; }
 void LinearDiffusion::set_pumping(const Vector& p) { pumping_ = p; }
 
 void LinearDiffusion::apply_boundary_conditions(
+    const State& state,
     const Mesh& mesh, const Parameters& params,
     Vector& residual, SparseMatrix& jacobian
 ) const {
+    const auto& s = state.as_2d();
+
     for (Index f : mesh.boundary_faces()) {
         const Face& face = mesh.face(f);
         Index cell = (face.cell_left >= 0) ? face.cell_left : face.cell_right;
@@ -178,7 +181,8 @@ void LinearDiffusion::apply_boundary_conditions(
             case BoundaryType::NoFlow:
                 break;
             case BoundaryType::FixedHead: {
-                residual(cell) = 0.0;
+                Real h_bc = face.bc_value;
+                residual(cell) = s.head(cell) - h_bc;
                 for (SparseMatrix::InnerIterator it(jacobian, cell); it; ++it) {
                     it.valueRef() = (it.col() == cell) ? 1.0 : 0.0;
                 }

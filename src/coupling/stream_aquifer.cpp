@@ -71,8 +71,21 @@ Real StreamAquiferExchange::dQ_dh_gw(
 
     switch (method_) {
         case StreamExchangeMethod::Conductance:
-        case StreamExchangeMethod::ConductanceClogging:
             return -C;
+
+        case StreamExchangeMethod::ConductanceClogging: {
+            // Effective conductance: C_eff = 1/(1/C_bed + 1/C_clog)
+            // For derivative, we need C_eff not raw C
+            const RiverSegment* seg = mesh.river_segment(cell);
+            if (!seg) return -C;
+            Real C_bed = params.streambed_K(cell) * seg->length * seg->width /
+                         (params.streambed_thickness(cell) + 1e-30);
+            Real C_clog = (params.has_clogging ? params.clogging_K(cell) : params.streambed_K(cell)) *
+                          seg->length * seg->width /
+                          ((params.has_clogging ? params.clogging_thickness(cell) : 1e-30) + 1e-30);
+            Real C_eff = C_bed * C_clog / (C_bed + C_clog + 1e-30);
+            return -C_eff;
+        }
 
         case StreamExchangeMethod::KinematicLosing:
             return stream_kernels::kinematic_losing_dQ_dhgw(
@@ -95,8 +108,21 @@ Real StreamAquiferExchange::dQ_dh_stream(
     Index cell, Real h_gw, Real h_stream,
     const StreamParameters& params, const Mesh& mesh
 ) const {
+    // For simple conductance: Q = C * (h_stream - h_gw), dQ/dh_stream = C
+    // For clogging: need effective conductance
+    if (method_ == StreamExchangeMethod::ConductanceClogging) {
+        const RiverSegment* seg = mesh.river_segment(cell);
+        if (seg) {
+            Real C_bed = params.streambed_K(cell) * seg->length * seg->width /
+                         (params.streambed_thickness(cell) + 1e-30);
+            Real C_clog = (params.has_clogging ? params.clogging_K(cell) : params.streambed_K(cell)) *
+                          seg->length * seg->width /
+                          ((params.has_clogging ? params.clogging_thickness(cell) : 1e-30) + 1e-30);
+            return C_bed * C_clog / (C_bed + C_clog + 1e-30);
+        }
+    }
     Real C = params.conductance()(cell);
-    return C;  // Q = C * (h_stream - h_gw), so dQ/dh_stream = C
+    return C;
 }
 
 void StreamAquiferExchange::add_to_residual(
@@ -119,7 +145,8 @@ void StreamAquiferExchange::add_to_jacobian(
 ) const {
     for (Index cell_id : mesh.river_cells()) {
         Real dQ = dQ_dh_gw(cell_id, h_gw(cell_id), h_stream(cell_id), params, mesh);
-        triplets.emplace_back(cell_id, cell_id, -dQ);  // Note sign
+        // Residual += Q, so Jacobian contribution = dQ/dh_gw
+        triplets.emplace_back(cell_id, cell_id, dQ);
     }
 }
 

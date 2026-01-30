@@ -52,6 +52,7 @@ public:
     void set_pumping(const Vector& pumping) override;
 
     void apply_boundary_conditions(
+        const State& state,
         const Mesh& mesh, const Parameters& params,
         Vector& residual, SparseMatrix& jacobian
     ) const override;

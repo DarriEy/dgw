@@ -116,7 +116,12 @@ public:
             case TimeSteppingMethod::CrankNicolson:
                 return 0.5;  // Central
             case TimeSteppingMethod::BDF2:
-                return 1.0;  // BDF2 is fully implicit (different formula)
+                // BDF2 requires different time discretization:
+                // (3*y_{n+1} - 4*y_n + y_{n-1}) / (2*dt) = f(y_{n+1})
+                // The implicit_weight is not sufficient to express BDF2.
+                // The physics modules must check for BDF2 and use the correct formula.
+                // Returning 1.0 here as a fallback (backward Euler behavior).
+                return 1.0;
             case TimeSteppingMethod::Adaptive:
                 return 1.0;  // Default to backward Euler
             default:
